@@ -1,0 +1,25 @@
+# dsh-paper-translate — 用 BabelDOC 整篇翻译 PDF 文献
+#
+# 干什么：把 PDF 变成中文双语对照版，并且在做之前先告诉你大概要花多少 token。
+#
+# 为什么需要它（直接用 babeldoc 会踩的坑）：
+#   1. babeldoc 不读 ~/.config/babeldoc/config.toml，必须显式 -c，否则直接报
+#      「必须选择一个翻译服务：--openai」；
+#   2. 服务端默认偷偷开 thinking，completion 里七成以上是推理 token（实测同一段
+#      1052 字符正文：754 → 174），本插件固定传 --openai-thinking disabled；
+#   3. 术语表本可以跨论文复用，默认却每篇重抽一遍，本插件按 domain 存一份
+#      ~/.local/share/dsh-paper-translate/glossary/<domain>.csv 并自动回填。
+#
+# 依赖不代装：缺 babeldoc / bitstring 版本过新 / config 里没写 key 时，工具会
+# 把准确的修复命令交回来，不替你 sudo、不替你 pip install。
+#
+# 配置项：
+#   poolWorkers / termPoolWorkers  并发数，默认 2；低余额账户 API 并发上限只有 3
+#   configPath                     自定义 BabelDOC config 路径
+#   babeldocBin / pythonBin        自定义可执行文件路径（默认自动探测）
+- insert:
+    - id: paper-translate
+      name: dsh-paper-translate
+      config:
+        poolWorkers: 2
+        termPoolWorkers: 2

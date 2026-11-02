@@ -1,0 +1,8 @@
+node_modules/
+.test-out/
+.e2e-out/
+.selftest.mjs
+.plugtest.mjs
+.loadtest.mjs
+.e2e.mjs
+*.log

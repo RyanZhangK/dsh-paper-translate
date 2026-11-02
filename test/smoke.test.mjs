@@ -17,6 +17,11 @@ import { buildArgs, predictOutputs, parseUsage } from '../lib/translate.js'
 import { Context } from '@deepseek-ai/cordis'
 import * as plugin from '../lib/index.js'
 
+// 术语库目录必须重定向到临时目录：早先的用例直接写 ~/.local/share/... 污染了真实数据
+process.env.DSH_PAPER_TRANSLATE_GLOSSARY_DIR = path.join(os.tmpdir(), `dpt-glossary-${process.pid}`)
+
+const EMPTY_USAGE = () => ({ total: 0, prompt: 0, completion: 0, cacheHitPrompt: 0, termExtraction: null, parsed: false })
+
 test('parseConfig 跳过注释与段头、去掉引号', () => {
   const cfg = parseConfig(
     [
@@ -39,9 +44,11 @@ test('parseConfig 跳过注释与段头、去掉引号', () => {
 test('safeDomain 拦住路径穿越', () => {
   assert.equal(safeDomain('slam'), 'slam')
   assert.equal(safeDomain('rl-v2.1'), 'rl-v2.1')
-  assert.throws(() => safeDomain('../etc'), /./)
   assert.equal(safeDomain(''), 'general', '空值回落到默认领域')
-  assert.throws(() => safeDomain('a/b'), /./)
+  // 断言具体错误码，而不是「抛了任何东西」——后者对类型错误也成立
+  assert.throws(() => safeDomain('../etc'), (e) => e.code === 'BAD_DOMAIN')
+  assert.throws(() => safeDomain('a/b'), (e) => e.code === 'BAD_DOMAIN')
+  assert.throws(() => safeDomain('-lead'), (e) => e.code === 'BAD_DOMAIN')
 })
 
 test('parseCsv 解析三列与引号', () => {
@@ -68,7 +75,7 @@ test('importBabeldocGlossary 跳过脏行', async () => {
   }
 })
 
-test('mergeGlossary 幂等且旧值优先', async () => {
+test('mergeGlossary 幂等、旧值优先、且按目标语言区分', async () => {
   const domain = 'smoke-test'
   const file = glossaryPath(domain)
   await rm(file, { force: true })
@@ -81,6 +88,12 @@ test('mergeGlossary 幂等且旧值优先', async () => {
     const again = await mergeGlossary(domain, [{ source: 'ICP', target: '换个译法' }])
     assert.equal(again.added, 0)
     assert.equal(again.total, 1)
+
+    // 同一个词翻成别的语言是一条独立记录，不能因为 source 相同就被吞掉
+    const en = await mergeGlossary(domain, [{ source: 'ICP', target: 'Iterative Closest Point', tgtLng: 'en' }])
+    assert.equal(en.added, 1, '不同目标语言不算重复')
+    assert.equal(en.total, 2)
+
     const rows = await readGlossary(domain)
     assert.equal(rows[0].target, '迭代最近点', '旧值优先')
     const text = await readFile(file, 'utf8')
@@ -123,11 +136,21 @@ test('parseUsage 认得 rich logging 的折行数字', () => {
     '                             tokens: total=55832 prompt=5790 completion=50042',
     '                             cache_hit_prompt=0',
   ].join('\n')
-  const usage = parseUsage(log, { total: 0, prompt: 0, completion: 0, cacheHitPrompt: 0, termExtraction: null })
+  const usage = parseUsage(log, EMPTY_USAGE())
   assert.equal(usage.total, 10137)
   assert.equal(usage.prompt, 7756)
   assert.equal(usage.completion, 2381)
+  assert.equal(usage.parsed, true)
   assert.deepEqual(usage.termExtraction, { total: 55832, prompt: 5790, completion: 50042, cacheHitPrompt: 0 })
+})
+
+test('parseUsage 区分「缓存命中 0 token」与「压根没解析到」', () => {
+  // 解析不到任何字段：不能当成缓存命中，否则钱花了却报 0
+  assert.equal(parseUsage('INFO 什么都没有', EMPTY_USAGE()).parsed, false)
+  // 真的解析出 0：这才是缓存命中
+  const zero = parseUsage('INFO Total tokens: 0 Prompt tokens: 0 Completion tokens: 0', EMPTY_USAGE())
+  assert.equal(zero.parsed, true)
+  assert.equal(zero.total, 0)
 })
 
 test('predictOutputs 跟随 BabelDOC 命名', () => {
@@ -135,6 +158,21 @@ test('predictOutputs 跟随 BabelDOC 命名', () => {
   assert.equal(path.basename(o.dual), 'Generalized_ICP.no_watermark.zh-CN.dual.pdf')
   assert.equal(path.basename(o.mono), 'Generalized_ICP.no_watermark.zh-CN.mono.pdf')
   assert.equal(path.basename(o.glossary), 'Generalized_ICP.no_watermark.zh-CN.glossary.csv')
+
+  // watermarked 模式不追加那一段，拼错了会把成功报成「产物不存在」
+  const w = predictOutputs('/p/a.pdf', '/out', 'zh-CN', 'watermarked')
+  assert.equal(path.basename(w.dual), 'a.zh-CN.dual.pdf')
+})
+
+test('countPages 与 babeldoc 的 --pages 语义一致', () => {
+  assert.equal(plugin.countPages('1-3', 10), 3)
+  assert.equal(plugin.countPages('-3', 10), 3, '开放区间：前 3 页')
+  assert.equal(plugin.countPages('5-', 10), 6, '开放区间：第 5 页到末尾')
+  assert.equal(plugin.countPages('5-100', 10), 6, '右界越界裁到总页数')
+  assert.equal(plugin.countPages('1-3,2-4', 10), 4, '重叠区间要去重')
+  assert.equal(plugin.countPages('0', 10), 10, '非法页回退整篇')
+  assert.equal(plugin.countPages('', 10), 10)
+  assert.equal(plugin.countPages('1,3,5', 10), 3)
 })
 
 test('成本预估与实测对齐', () => {
@@ -147,8 +185,15 @@ test('成本预估与实测对齐', () => {
   assert.ok(first.tokens.total > reuse.tokens.total, '首次抽取必须比复用贵')
   assert.ok(first.tokens.total < 238099, '仍要明显低于原生基线')
 
-  const noModel = estimateTranslation({ pages: 2, model: 'unknown-model', hasGlossary: true, extractGlossary: false })
-  assert.ok(noModel.cost > 0, '未知模型回落到默认单价')
+  // pricing 真接线了才谈得上「未知模型回落默认单价」
+  const custom = estimateTranslation({
+    pages: 8,
+    model: 'mystery',
+    hasGlossary: true,
+    extractGlossary: false,
+    pricing: { mystery: { input: 9, output: 9 } },
+  })
+  assert.ok(custom.cost > 0)
 })
 
 test('插件在真实 cordis 容器里注册出 paper_translate', async () => {
@@ -156,14 +201,19 @@ test('插件在真实 cordis 容器里注册出 paper_translate', async () => {
   const registered = []
   app.provide('tools', { register: (t) => registered.push(t) })
   app.plugin(plugin)
-  await new Promise((r) => setTimeout(r, 100))
-  assert.equal(registered.length, 1)
-  const tool = registered[0]
-  assert.equal(tool.name, 'paper_translate')
-  const props = tool.parameters.properties || {}
-  for (const key of ['pdf', 'domain', 'pages', 'extractGlossary', 'dryRun', 'ignoreCache', 'langOut', 'outputDir']) {
-    assert.ok(props[key], `缺参数 ${key}`)
+  // 不要用固定的 setTimeout 猜时序，轮询到注册完成为止
+  for (let i = 0; i < 100 && registered.length === 0; i++) await new Promise((r) => setTimeout(r, 10))
+  try {
+    assert.equal(registered.length, 1)
+    const tool = registered[0]
+    assert.equal(tool.name, 'paper_translate')
+    const props = tool.parameters.properties || {}
+    for (const key of ['pdf', 'domain', 'pages', 'extractGlossary', 'dryRun', 'ignoreCache', 'langOut', 'outputDir']) {
+      assert.ok(props[key], `缺参数 ${key}`)
+    }
+    assert.deepEqual(tool.parameters.required, ['pdf'])
+    assert.equal(typeof tool.execute, 'function')
+  } finally {
+    await app.dispose?.()
   }
-  assert.deepEqual(tool.parameters.required, ['pdf'])
-  assert.equal(typeof tool.execute, 'function')
 })

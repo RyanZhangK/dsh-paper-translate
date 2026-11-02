@@ -51,16 +51,20 @@ error: 必须选择一个翻译服务：--openai
 ```bash
 git clone https://github.com/RyanZhangK/dsh-paper-translate.git
 cd dsh-paper-translate
-npm install   # 只为本地 peer 依赖解析，运行时不打包 DSH
+npm install --omit=dev   # 只是让 peer 依赖能解析，运行时不打包 DSH
 ```
 
-在 `~/.dsh/profiles/<你的 profile>/package.json` 的 `dependencies` 里加一行：
+然后**用 `dsh plugin` 装进你的 profile**（它会同时写 `dependencies` 和 `dsh.profile.bundles`）：
 
-```json
-"dsh-paper-translate": "link:/绝对路径/dsh-paper-translate"
+```bash
+dsh plugin --profile <你的 profile> add link:/绝对路径/dsh-paper-translate
 ```
 
-在该 profile 目录执行一次 `npm install`，然后重启 DSH。插件会在 `tools` 服务就绪后自己挂上，不需要额外配置。
+> ⚠️ 关键点：只往 `~/.dsh/profiles/<profile>/package.json` 的 `dependencies` 里加一行、再 `npm install`，**插件不会生效**。DSH 启动时只加载 `dsh.profile.bundles` 里列出的包（`dsh-app-boot` 的 `loadProfileDirectory()`），那个数组是 `dsh plugin add` 才会帮你补的。
+>
+> 确实要手工装的话，两个地方都得改：`dependencies` 加 `"dsh-paper-translate": "link:/绝对路径/dsh-paper-translate"`，**并且**把它追加进 `dsh.profile.bundles` 数组。
+
+装完重启 DSH，插件会在 `tools` 服务就绪后自己挂上，不需要额外配置。
 
 要自定义并发等参数，在 cordis 配置里给 `paper-translate` 这一行加 `config`（见 `cordis.patch.yml` 的注释）。
 
@@ -70,10 +74,10 @@ npm install   # 只为本地 peer 依赖解析，运行时不打包 DSH
 
 | 参数 | 说明 |
 | --- | --- |
-| `pdf` | 必填，PDF 绝对路径 |
+| `pdf` | 必填，PDF **绝对路径**（工具进程的 cwd 不是你的 shell 目录，相对路径会解析到别处，插件直接拒绝） |
 | `domain` | 术语库领域，如 `slam` / `rl` / `cv`，默认 `general`。同领域论文共用一份术语表 |
 | `pages` | 只翻部分页，如 `1-6` 或 `1,3,7-9` |
-| `extractGlossary` | 没有可用词表时是否允许现场抽取，默认 `true`。关掉再省约 23%，代价是术语一致性变差 |
+| `extractGlossary` | 是否允许现场抽取术语。默认 `true`，但**只有该领域还没有可用词表时才会真的抽**——BabelDOC 一旦抽词就会把 `--glossary-files` 的用户词表整个丢弃（`get_glossaries_for_translation()` 直接 return 自动词表），两者互斥。传 `false` 表示只复用词表、不花钱抽新词 |
 | `langOut` | 目标语言，默认沿用 config 的 `lang-out` |
 | `outputDir` | 输出目录，默认沿用 config 的 `output` |
 | `dryRun` | 只做环境检查 + 成本预估，不启动翻译 |
@@ -106,7 +110,7 @@ npm install   # 只为本地 peer 依赖解析，运行时不打包 DSH
 
 - 只处理有文本层的 PDF；扫描件不会自动 OCR。
 - 不处理非 PDF。
-- 术语表按 `source` 大小写不敏感去重，**旧值优先**，新词只增不覆盖。
+- 术语表按 `source` + `tgt_lng` 去重（`source` 大小写不敏感），**旧值优先**，新词只增不覆盖。同一个词翻成另一种语言算独立记录。
 - 并发默认 2：低余额账户的 API 并发上限只有 3，开 4 会稳定撞 429。
 - BabelDOC 默认复用翻译缓存，同一份 PDF 第二次跑是 0 token（结果里会说明）。想重翻就传 `ignoreCache`。
 - 成本预估按「页均摊」推，整篇翻译时比较准；只翻前一两页试读时，实测会明显低于预估（首页文字量通常少于平均页）。

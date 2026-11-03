@@ -12,7 +12,9 @@
     "lib",
     "cordis.patch.yml",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "screenshots.json",
+    "assets"
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs"

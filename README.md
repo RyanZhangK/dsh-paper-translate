@@ -15,6 +15,12 @@
 - **双语对照输出**：`.dual.pdf`（原文/译文交替）+ `.mono.pdf`（纯译文）
 - **缓存透明**：命中 BabelDOC 本地翻译缓存时明确告诉你 0 token，想强制重翻传 `ignoreCache: true`
 
+## 📸 预览
+
+![双语对照产物：原文与译文逐页交替](assets/screenshot-1.png)
+
+![dryRun 成本预估输出](assets/screenshot-2.png)
+
 ## 📦 安装
 
 不发 npm，两种装法，都走 `dsh plugin`（它会同时写 `dependencies` 和 `dsh.profile.bundles`）：

@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # 插件能被 dsh plugin add 认出来，靠的就是这个 manifest。
+      # 缺失或指向不存在的文件时，装进去也只会静默不加载。
+      - name: 校验 dsh.bundle manifest
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const pkg = require("./package.json");
+            const patch = pkg.dsh && pkg.dsh.bundle && pkg.dsh.bundle.patch;
+            if (!patch) {
+              console.error("package.json 缺少 dsh.bundle.patch —— dsh plugin add 无法把它当插件加载");
+              process.exit(1);
+            }
+            if (!fs.existsSync(patch)) {
+              console.error("dsh.bundle.patch 指向的文件不存在: " + patch);
+              process.exit(1);
+            }
+            console.log("dsh.bundle OK -> " + patch);
+          '
+
+      # 无依赖安装：宿主提供的 @deepseek-ai/* 包不在 npm 上，
+      # 缺失时对应用例会 skip，其余用例照跑（实现在 test/smoke.test.mjs 顶部）。
+      - name: 跑测试
+        run: npm test
+
+  pack:
+    name: npm pack 内容检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 发布物必须自洽：带 lib/ 与 cordis.patch.yml，不带 test/ 和临时脚本。
+      - name: 检查 tarball 内容
+        run: |
+          npm pack --silent > /dev/null
+          TARBALL=$(ls *.tgz | head -n1)
+          echo "tarball: $TARBALL"
+          LIST=$(tar -tzf "$TARBALL")
+          echo "$LIST"
+          for f in package/lib/index.js package/cordis.patch.yml package/README.md package/LICENSE package/package.json; do
+            echo "$LIST" | grep -qx "$f" || { echo "缺少 $f"; exit 1; }
+          done
+          if echo "$LIST" | grep -q '^package/test/'; then
+            echo "test/ 不应进入发布物（files 白名单没生效）"; exit 1
+          fi
+          echo "pack OK"

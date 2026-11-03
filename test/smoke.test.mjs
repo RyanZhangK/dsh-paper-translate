@@ -13,9 +13,17 @@ import os from 'node:os'
 import { parseConfig } from '../lib/detect.js'
 import { parseCsv, safeDomain, glossaryPath, mergeGlossary, readGlossary, importBabeldocGlossary } from '../lib/glossary.js'
 import { estimateTranslation } from '../lib/estimate.js'
-import { buildArgs, predictOutputs, parseUsage } from '../lib/translate.js'
-import { Context } from '@deepseek-ai/cordis'
-import * as plugin from '../lib/index.js'
+import { buildArgs, predictOutputs, parseUsage, countPages } from '../lib/translate.js'
+// @deepseek-ai/cordis 与 @deepseek-ai/dsh-tools 由 DSH 宿主提供，npm 上没有可用版本。
+// 本地开发用 node_modules 里的符号链接跑真实注册用例；CI 上没有宿主，自动跳过那条。
+let Context = null
+let plugin = null
+try {
+  ({ Context } = await import('@deepseek-ai/cordis'))
+  plugin = await import('../lib/index.js')
+} catch {
+  // 宿主包缺失——依赖它们的用例 skip，其余用例照跑
+}
 
 // 术语库目录必须重定向到临时目录：早先的用例直接写 ~/.local/share/... 污染了真实数据
 process.env.DSH_PAPER_TRANSLATE_GLOSSARY_DIR = path.join(os.tmpdir(), `dpt-glossary-${process.pid}`)
@@ -165,14 +173,14 @@ test('predictOutputs 跟随 BabelDOC 命名', () => {
 })
 
 test('countPages 与 babeldoc 的 --pages 语义一致', () => {
-  assert.equal(plugin.countPages('1-3', 10), 3)
-  assert.equal(plugin.countPages('-3', 10), 3, '开放区间：前 3 页')
-  assert.equal(plugin.countPages('5-', 10), 6, '开放区间：第 5 页到末尾')
-  assert.equal(plugin.countPages('5-100', 10), 6, '右界越界裁到总页数')
-  assert.equal(plugin.countPages('1-3,2-4', 10), 4, '重叠区间要去重')
-  assert.equal(plugin.countPages('0', 10), 10, '非法页回退整篇')
-  assert.equal(plugin.countPages('', 10), 10)
-  assert.equal(plugin.countPages('1,3,5', 10), 3)
+  assert.equal(countPages('1-3', 10), 3)
+  assert.equal(countPages('-3', 10), 3, '开放区间：前 3 页')
+  assert.equal(countPages('5-', 10), 6, '开放区间：第 5 页到末尾')
+  assert.equal(countPages('5-100', 10), 6, '右界越界裁到总页数')
+  assert.equal(countPages('1-3,2-4', 10), 4, '重叠区间要去重')
+  assert.equal(countPages('0', 10), 10, '非法页回退整篇')
+  assert.equal(countPages('', 10), 10)
+  assert.equal(countPages('1,3,5', 10), 3)
 })
 
 test('成本预估与实测对齐', () => {
@@ -196,7 +204,8 @@ test('成本预估与实测对齐', () => {
   assert.ok(custom.cost > 0)
 })
 
-test('插件在真实 cordis 容器里注册出 paper_translate', async () => {
+test('插件在真实 cordis 容器里注册出 paper_translate', async (t) => {
+  if (!Context || !plugin) return t.skip('未找到 @deepseek-ai/cordis / @deepseek-ai/dsh-tools：无 DSH 宿主环境（CI 上的正常现象）')
   const app = new Context()
   const registered = []
   app.provide('tools', { register: (t) => registered.push(t) })

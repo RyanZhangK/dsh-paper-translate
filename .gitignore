@@ -6,3 +6,4 @@ node_modules/
 .loadtest.mjs
 .e2e.mjs
 *.log
+.gh-test/

@@ -18,16 +18,30 @@
     "test": "node --test test/"
   },
   "keywords": [
+    "deepseek-harness",
+    "deepseek",
     "dsh",
     "dsh-plugin",
-    "babeldoc",
+    "cordis",
+    "plugin",
     "pdf",
-    "translation"
+    "pdf-translation",
+    "paper",
+    "paper-translation",
+    "babeldoc",
+    "translation",
+    "glossary",
+    "cost-estimate"
   ],
+  "author": "RyanZhangK",
   "license": "MIT",
+  "homepage": "https://github.com/RyanZhangK/dsh-paper-translate#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/RyanZhangK/dsh-paper-translate.git"
+  },
+  "bugs": {
+    "url": "https://github.com/RyanZhangK/dsh-paper-translate/issues"
   },
   "engines": {
     "node": ">=20"
@@ -47,6 +61,9 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "engines": {
+      "dsh": ">=0.2.0-rc.1"
     }
   }
 }

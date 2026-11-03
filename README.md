@@ -1,5 +1,7 @@
 # dsh-paper-translate
 
+[![CI](https://github.com/RyanZhangK/dsh-paper-translate/actions/workflows/ci.yml/badge.svg)](https://github.com/RyanZhangK/dsh-paper-translate/actions/workflows/ci.yml)
+
 > 把 [BabelDOC](https://github.com/funstory-ai/BabelDOC) 包成一个 DSH 工具：整篇 PDF 文献 → 中文双语对照版，**先报成本，再动手**。
 
 它不重新发明翻译，只补掉直接用 BabelDOC 时会踩到的三个坑：不读自己的 config、服务端偷偷开 thinking、术语表每篇重抽一遍。
@@ -137,7 +139,7 @@ error: 必须选择一个翻译服务：--openai
 git clone https://github.com/RyanZhangK/dsh-paper-translate.git
 cd dsh-paper-translate
 
-npm test   # node --test test/，12 个用例
+npm test   # node --test test/*.test.mjs，12 个用例（无宿主时 11 过 1 跳过）
 ```
 
 代码结构：

@@ -46,19 +46,24 @@ error: 必须选择一个翻译服务：--openai
 
 ## 装
 
-目前不发 npm，走本地 link：
+不发 npm，两种装法，都走 `dsh plugin`（它会同时写 `dependencies` 和 `dsh.profile.bundles`）：
+
+**A. 直接从 GitHub 装**（推荐，一条命令）：
+
+```bash
+dsh plugin --profile <你的 profile> add github:RyanZhangK/dsh-paper-translate
+```
+
+**B. 本地 clone + link**（要改代码时用）：
 
 ```bash
 git clone https://github.com/RyanZhangK/dsh-paper-translate.git
-cd dsh-paper-translate
-npm install --omit=dev   # 只是让 peer 依赖能解析，运行时不打包 DSH
-```
-
-然后**用 `dsh plugin` 装进你的 profile**（它会同时写 `dependencies` 和 `dsh.profile.bundles`）：
-
-```bash
 dsh plugin --profile <你的 profile> add link:/绝对路径/dsh-paper-translate
 ```
+
+> 不需要自己 `npm install`。`@deepseek-ai/cordis` 和 `@deepseek-ai/dsh-tools` 是 **optional peer**，运行时由 DSH 宿主解析（`dsh-app-boot` 的 `HostResolvedRootInclude.import()` 把 bare specifier 指到宿主安装目录），所以插件目录里没有 `node_modules` 也能跑。
+>
+> 这两个 peer 必须写真实版本范围并标 `"optional": true`。写成 `"*"` 时 pnpm 会去 registry 找满足 `*` 的 `@deepseek-ai/dsh-tools`（只有 0.0.1-rc.1），而它依赖的 `@deepseek-ai/dsh-type-meta` 从没发布过，安装会以 `ERR_PNPM_FETCH_404` 失败。
 
 > ⚠️ 关键点：只往 `~/.dsh/profiles/<profile>/package.json` 的 `dependencies` 里加一行、再 `npm install`，**插件不会生效**。DSH 启动时只加载 `dsh.profile.bundles` 里列出的包（`dsh-app-boot` 的 `loadProfileDirectory()`），那个数组是 `dsh plugin add` 才会帮你补的。
 >

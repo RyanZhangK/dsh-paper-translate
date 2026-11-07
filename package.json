@@ -1,6 +1,6 @@
 {
   "name": "dsh-paper-translate",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DeepSeek Harness 论文翻译插件：封装 BabelDOC，默认关闭 thinking 推理开销，术语表跨文档复用，翻译前给成本预估。",
   "type": "module",
   "main": "lib/index.js",

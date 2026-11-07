@@ -145,18 +145,19 @@ error: 必须选择一个翻译服务：--openai
 git clone https://github.com/RyanZhangK/dsh-paper-translate.git
 cd dsh-paper-translate
 
-npm test   # node --test test/*.test.mjs，12 个用例（无宿主时 11 过 1 跳过）
+npm test   # node --test test/*.test.mjs，16 个用例（无宿主时 15 过 1 跳过）
 ```
 
 代码结构：
 
 | 文件 | 职责 |
 | --- | --- |
-| `lib/index.js` | 注册 `paper_translate` 工具，串起下面四步 |
+| `lib/index.js` | 注册 `paper_translate` 工具，串起下面几步 |
 | `lib/detect.js` | 环境自检（babeldoc / config / key / bitstring / 探活） |
 | `lib/glossary.js` | 术语表读写、按语言过滤、去重合并、导入 BabelDOC 原生 CSV |
 | `lib/estimate.js` | 成本预估常量与格式化 |
 | `lib/translate.js` | 拼参数、跑子进程、流式解析用量、预测产物名 |
+| `lib/format.js` | 定宽文本表格：按显示列对齐、超宽截断，不用 `\t` |
 
 测试环境变量 `DSH_PAPER_TRANSLATE_GLOSSARY_DIR` 可以把术语库指到临时目录，避免污染真实数据。
 

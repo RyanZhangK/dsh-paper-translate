@@ -14,6 +14,7 @@ import { parseConfig } from '../lib/detect.js'
 import { parseCsv, safeDomain, glossaryPath, mergeGlossary, readGlossary, importBabeldocGlossary } from '../lib/glossary.js'
 import { estimateTranslation } from '../lib/estimate.js'
 import { buildArgs, predictOutputs, parseUsage, countPages } from '../lib/translate.js'
+import { displayWidth, truncate, table, fmtTokens } from '../lib/format.js'
 // @deepseek-ai/cordis 与 @deepseek-ai/dsh-tools 由 DSH 宿主提供，npm 上没有可用版本。
 // 本地开发用 node_modules 里的符号链接跑真实注册用例；CI 上没有宿主，自动跳过那条。
 let Context = null
@@ -225,4 +226,48 @@ test('插件在真实 cordis 容器里注册出 paper_translate', async (t) => {
   } finally {
     await app.dispose?.()
   }
+})
+
+test('displayWidth 按东亚宽度算列，不吃 emoji 与 ANSI', () => {
+  assert.equal(displayWidth('abc'), 3)
+  assert.equal(displayWidth('中文'), 4)
+  assert.equal(displayWidth('译'), 2)
+  // 中英混排是最容易按 length 补错的地方
+  assert.equal(displayWidth('a中b'), 4)
+  assert.equal(displayWidth('🐋'), 2)
+  // ANSI 转义宽 0：按字节补空格是整行错位的经典原因
+  assert.equal(displayWidth('\u001b[31mred\u001b[0m'), 3)
+})
+
+test('truncate 超宽补省略号且不越界', () => {
+  assert.equal(truncate('abcdef', 10), 'abcdef')
+  const cut = truncate('中文中文中文中文', 10)
+  assert.ok(displayWidth(cut) <= 10, `截断后超宽：${cut}`)
+  assert.ok(cut.endsWith('…'))
+  // width 为 0 时不能返回省略号，那会把列撑破
+  assert.equal(truncate('abc', 0), '')
+})
+
+test('table 每行不超总宽，数值列按显示宽度对齐', () => {
+  const lines = table([
+    ['页数', '8 页'],
+    ['目标语言', 'zh-CN'],
+  ], { width: 40 })
+  for (const line of lines) assert.ok(displayWidth(line) <= 40, `超宽：${line}`)
+  // 两行的数值都从第 10 显示列开始（标签列 8 + 间隔 2）；字符索引不同，这才是不能用 length 的理由
+  const colOf = (line, needle) => displayWidth(line.slice(0, line.indexOf(needle)))
+  assert.equal(colOf(lines[0], '8 页'), 10)
+  assert.equal(colOf(lines[1], 'zh-CN'), 10)
+
+  // 标签本身比总宽还长时也要截断标签，否则整行必然溢出
+  const long = table([['@deepseek-ai/dsh-experimental-inspector-profile', 'MISSING']], { width: 30 })
+  assert.ok(displayWidth(long[0]) <= 30, `标签超长时溢出：${long[0]}`)
+})
+
+test('fmtTokens 千分位与 locale 无关', () => {
+  assert.equal(fmtTokens(43542), '43,542')
+  assert.equal(fmtTokens(0), '0')
+  assert.equal(fmtTokens(238099), '238,099')
+  // usage 解析出来的是字符串，不能只接受 number
+  assert.equal(fmtTokens('1234567'), '1,234,567')
 })

@@ -6,14 +6,16 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { rm, readFile, writeFile } from 'node:fs/promises'
+import { rm, readFile, writeFile, mkdtemp, utimes } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import path from 'node:path'
 import os from 'node:os'
 
-import { parseConfig } from '../lib/detect.js'
+import { parseConfig, resolvePython, buildHostConfigText, checkEnvironment } from '../lib/detect.js'
 import { parseCsv, safeDomain, glossaryPath, mergeGlossary, readGlossary, importBabeldocGlossary } from '../lib/glossary.js'
 import { estimateTranslation } from '../lib/estimate.js'
-import { buildArgs, predictOutputs, parseUsage, countPages } from '../lib/translate.js'
+import { buildArgs, predictOutputs, resolveOutputs, parseUsage, countPages, countCjk, detectApiErrors, samplePageIndices, verifyTranslation } from '../lib/translate.js'
 import { displayWidth, truncate, table, fmtTokens } from '../lib/format.js'
 // @deepseek-ai/cordis 与 @deepseek-ai/dsh-tools 由 DSH 宿主提供，npm 上没有可用版本。
 // 本地开发用 node_modules 里的符号链接跑真实注册用例；CI 上没有宿主，自动跳过那条。
@@ -173,6 +175,133 @@ test('predictOutputs 跟随 BabelDOC 命名', () => {
   assert.equal(path.basename(w.dual), 'a.zh-CN.dual.pdf')
 })
 
+test('predictOutputs 列出带/不带 .no_watermark 两套候选', () => {
+  const o = predictOutputs('/p/a.pdf', '/out', 'zh-CN', 'no_watermark')
+  assert.deepEqual(o.candidates.dual.map((p) => path.basename(p)), [
+    'a.no_watermark.zh-CN.dual.pdf',
+    'a.zh-CN.dual.pdf',
+  ])
+  assert.deepEqual(o.candidates.mono.map((p) => path.basename(p)), [
+    'a.no_watermark.zh-CN.mono.pdf',
+    'a.zh-CN.mono.pdf',
+  ])
+  // watermarked 模式只有一套
+  const w = predictOutputs('/p/a.pdf', '/out', 'zh-CN', 'watermarked')
+  assert.deepEqual(w.candidates.dual.map((p) => path.basename(p)), ['a.zh-CN.dual.pdf'])
+})
+
+test('resolveOutputs 两套命名都认得，并存取 mtime 较新者', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'dpt-outputs-'))
+  try {
+    const o = predictOutputs(path.join(dir, 'paper.pdf'), dir, 'zh-CN', 'no_watermark')
+
+    // 情形 1：只有分片合并产物（不带段）——0.1.1 在这里误报「产物不存在」
+    await writeFile(o.candidates.dual[1], 'dual-clean')
+    await writeFile(o.candidates.mono[1], 'mono-clean')
+    let r = await resolveOutputs(o)
+    assert.equal(r.existing.dual, true)
+    assert.equal(path.basename(r.dual), 'paper.zh-CN.dual.pdf')
+    assert.equal(path.basename(r.mono), 'paper.zh-CN.mono.pdf')
+    assert.equal(r.existing.glossary, false)
+
+    // 情形 2：只有单篇产物（带段）
+    await rm(o.candidates.dual[1]); await rm(o.candidates.mono[1])
+    await writeFile(o.candidates.dual[0], 'dual-tagged')
+    r = await resolveOutputs(o)
+    assert.equal(r.existing.dual, true)
+    assert.equal(path.basename(r.dual), 'paper.no_watermark.zh-CN.dual.pdf')
+
+    // 情形 3：两套并存，取 mtime 较新者（旧文件是上次运行留下的，不能冒充本次）
+    await writeFile(o.candidates.dual[1], 'dual-clean-new')
+    const old = new Date(Date.now() - 60_000)
+    await utimes(o.candidates.dual[0], old, old)
+    r = await resolveOutputs(o)
+    assert.equal(path.basename(r.dual), 'paper.zh-CN.dual.pdf', '应取较新的无段产物')
+
+    // 情形 4：都不存在 → 回落主候选名，existing 全 false
+    await rm(o.candidates.dual[0]); await rm(o.candidates.dual[1])
+    r = await resolveOutputs(o)
+    assert.equal(r.existing.dual, false)
+    assert.equal(r.dual, o.dual)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('countCjk 数汉字与假名，不数英文', () => {
+  assert.equal(countCjk('里程计'), 3)
+  assert.equal(countCjk('Point-LIO 里程计'), 3)
+  assert.equal(countCjk('こんにちは'), 5, '平假名也算')
+  assert.equal(countCjk('Robust High-Bandwidth Odometry'), 0)
+  assert.equal(countCjk(''), 0)
+})
+
+test('detectApiErrors 从日志捞根因：额度/鉴权/限流/网络', () => {
+  // 真实事故日志：cf.api.fan 余额为负时的 403
+  const quota = detectApiErrors(
+    'Error code: 403 - {"error":{"message":"用户额度不足, 剩余额度: ＄-0.051886","code":"insufficient_user_quota"}}',
+  )
+  assert.ok(quota.some((e) => e.code === 'QUOTA'), '应识别额度不足')
+  assert.ok(quota.every((e) => e.hint.length > 0), '每条根因都要带修复指引')
+
+  assert.deepEqual(detectApiErrors('openai.AuthenticationError: Error code: 401 - invalid api key').map((e) => e.code), ['AUTH'])
+  assert.deepEqual(detectApiErrors('Error code: 429 - rate limit exceeded').map((e) => e.code), ['RATE_LIMIT'])
+  assert.deepEqual(detectApiErrors('openai.APIConnectionError: Connection error.').map((e) => e.code), ['NETWORK'])
+  assert.deepEqual(detectApiErrors('Translation finished successfully'), [])
+  // ANSI 折行日志也要认得（normalizeLog 先洗一遍）
+  assert.ok(detectApiErrors('\x1b[31mError code: 401\x1b[0m - unauthorized').some((e) => e.code === 'AUTH'))
+})
+
+test('samplePageIndices 首尾+五等分去重', () => {
+  assert.deepEqual(samplePageIndices(0), [])
+  assert.deepEqual(samplePageIndices(1), [0])
+  assert.deepEqual(samplePageIndices(33), [0, 6, 13, 19, 26, 32])
+})
+
+test('verifyTranslation 识破英文副本、放行真中文（需 python+fitz，缺失则跳过）', async (t) => {
+  const execFileAsync = promisify(execFile)
+  const pythonBin = await resolvePython()
+  try {
+    await execFileAsync(pythonBin, ['-c', 'import fitz'], { timeout: 15000 })
+  } catch {
+    return t.skip('python/fitz 不可用（CI 无 BabelDOC 时的正常现象）')
+  }
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'dpt-verify-'))
+  try {
+    const zhPdf = path.join(dir, 'zh.pdf')
+    const enPdf = path.join(dir, 'en.pdf')
+    // china-s 是 PyMuPDF 内置 CJK 字体，不需要系统装中文字体
+    await execFileAsync(pythonBin, ['-c', [
+      'import fitz,sys',
+      'd=fitz.open();p=d.new_page()',
+      "p.insert_text((72,72),'本文提出一种鲁棒的高带宽激光雷达惯性里程计方法。',fontname='china-s',fontsize=12)",
+      "p.insert_text((72,100),'实验表明该方法在剧烈运动下仍能保持高精度状态估计。',fontname='china-s',fontsize=12)",
+      'd.save(sys.argv[1])',
+    ].join('\n'), zhPdf], { timeout: 30000 })
+    await execFileAsync(pythonBin, ['-c', [
+      'import fitz,sys',
+      'd=fitz.open();p=d.new_page()',
+      "p.insert_text((72,72),'Point-LIO: Robust High-Bandwidth LiDAR-Inertial Odometry',fontname='helv',fontsize=12)",
+      'd.save(sys.argv[1])',
+    ].join('\n'), enPdf], { timeout: 30000 })
+
+    const zh = await verifyTranslation(zhPdf, 'zh-CN', pythonBin)
+    assert.equal(zh.checked, true)
+    assert.equal(zh.ok, true, '真中文译文应通过验收')
+    assert.ok(zh.cjkCount >= 20)
+
+    const en = await verifyTranslation(enPdf, 'zh-CN', pythonBin)
+    assert.equal(en.checked, true)
+    assert.equal(en.ok, false, '英文副本必须被识破——这正是 0.1.1 漏掉的事故')
+
+    const fr = await verifyTranslation(enPdf, 'fr', pythonBin)
+    assert.equal(fr.checked, false, '非中日文目标语言跳过验收')
+    assert.equal(fr.ok, true)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('countPages 与 babeldoc 的 --pages 语义一致', () => {
   assert.equal(countPages('1-3', 10), 3)
   assert.equal(countPages('-3', 10), 3, '开放区间：前 3 页')
@@ -270,4 +399,75 @@ test('fmtTokens 千分位与 locale 无关', () => {
   assert.equal(fmtTokens(238099), '238,099')
   // usage 解析出来的是字符串，不能只接受 number
   assert.equal(fmtTokens('1234567'), '1,234,567')
+})
+
+test('buildHostConfigText 用桥字段、继承非 API 偏好、绝不抄第三方 key', () => {
+  // 模拟 detect 归一化后的 env.config：原始键 + 派生键，含用户真实第三方 key
+  const base = {
+    openai: 'true',
+    'openai-api-key': 'sk-***',
+    'openai-base-url': 'https://third.party/v1',
+    'openai-model': 'third-party-model',
+    output: '/old/out',
+    'lang-out': 'zh-CN',
+    'lang-in': 'en-US',
+    'max-pages-per-part': '30',
+    'skip-scanned-detection': 'true',
+    // 派生键（detect 塞进来的，不是 TOML 字段）
+    configPath: '/home/u/.config/babeldoc/config.toml',
+    baseUrl: 'https://third.party/v1',
+    model: 'third-party-model',
+    apiKey: 'sk-***',
+    outputDir: '/old/out',
+    langOut: 'zh-CN',
+    bitstring: '4.3.0',
+  }
+  const text = buildHostConfigText(base, {
+    baseUrl: 'http://127.0.0.1:54321/v1',
+    token: 'bridge-token-xyz',
+    model: 'host-model',
+    outputDir: '/new/out',
+    langOut: 'zh-CN',
+  })
+  const cfg = parseConfig(text)
+  // 桥字段覆写
+  assert.equal(cfg.openai, 'true')
+  assert.equal(cfg['openai-base-url'], 'http://127.0.0.1:54321/v1')
+  assert.equal(cfg['openai-api-key'], 'bridge-token-xyz')
+  assert.equal(cfg['openai-model'], 'host-model')
+  assert.equal(cfg.output, '/new/out')
+  // 非 API 偏好继承
+  assert.equal(cfg['lang-in'], 'en-US')
+  assert.equal(cfg['max-pages-per-part'], '30')
+  assert.equal(cfg['skip-scanned-detection'], 'true')
+  // 安全：真实第三方 key 与派生键都不能出现在合成文本里
+  assert.ok(!text.includes('sk-***'), '泄露了用户第三方 key')
+  assert.ok(!text.includes('third.party'), '抄进了第三方 base-url')
+  assert.ok(!text.includes('configPath'), '回写了派生键')
+  assert.ok(!text.includes('bitstring'), '回写了派生键')
+  // 回归：布尔/数字必须是 TOML 原生标量（不带引号）。BabelDOC 的 --openai 是 store_true，
+  // 写成 openai = "true" 会被 configargparse 当字符串而不激活，整篇报「必须选择 --openai」。
+  assert.match(text, /^openai = true$/m, 'openai 必须是未加引号的 TOML 布尔')
+  assert.match(text, /^skip-scanned-detection = true$/m, '继承的布尔偏好也要未加引号')
+  assert.match(text, /^max-pages-per-part = 30$/m, '继承的数字偏好也要未加引号')
+  assert.ok(!/^openai = "true"$/m.test(text), 'openai 不能写成带引号的字符串')
+  // 回归：必须带 [babeldoc] 段头。BabelDOC 的 configargparse 只从该段读配置，
+  // 缺段头时 openai 落在顶层不被读取，整篇报「必须选择一个翻译服务：--openai」。
+  assert.match(text, /^\[babeldoc\]$/m, '合成 config 必须带 [babeldoc] 段头')
+})
+
+test('checkEnvironment host 模式放宽 config 必填，config 模式仍严格', async () => {
+  const missing = path.join(os.tmpdir(), `dpt-no-config-${process.pid}.toml`)
+  await rm(missing, { force: true })
+  const configCodes = (r) => r.problems.map((p) => p.code)
+
+  // host 模式：config 不存在也不报 CONFIG_UNREADABLE / MISSING_*
+  const host = await checkEnvironment({ configPath: missing, hostMode: true })
+  for (const code of ['CONFIG_UNREADABLE', 'MISSING_OPENAI', 'MISSING_KEY']) {
+    assert.ok(!configCodes(host).includes(code), `host 模式不该报 ${code}`)
+  }
+
+  // config 模式：同样的缺失 config 必须报 CONFIG_UNREADABLE
+  const strict = await checkEnvironment({ configPath: missing, hostMode: false })
+  assert.ok(configCodes(strict).includes('CONFIG_UNREADABLE'), 'config 模式应报 CONFIG_UNREADABLE')
 })

@@ -17,9 +17,18 @@
 #   poolWorkers / termPoolWorkers  并发数，默认 2；低余额账户 API 并发上限只有 3
 #   configPath                     自定义 BabelDOC config 路径
 #   babeldocBin / pythonBin        自定义可执行文件路径（默认自动探测）
+#   llmBridge                      可选，指定 LLM 桥（api=host）用的宿主模型：
+#                                    provider / model / reasoningEffort
+#                                  不填则自动用 DSH 默认模型（agentDefaultModel）
+#
+# 翻译 API 来源由工具参数 api 控制（host / config / auto，默认 auto）：
+#   host   走 DSH 宿主模型，本地起 OpenAI 兼容桥，无需第三方 key；
+#   config 用 BabelDOC config.toml 的第三方 API；
+#   auto   宿主 llm 可用走 host，否则回落 config。
 - insert:
     - id: paper-translate
       name: dsh-paper-translate
       config:
         poolWorkers: 2
         termPoolWorkers: 2
+        llmBridge: {}

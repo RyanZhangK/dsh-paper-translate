@@ -1,7 +1,7 @@
 {
   "name": "dsh-paper-translate",
-  "version": "0.1.1",
-  "description": "DeepSeek Harness 论文翻译插件：封装 BabelDOC，默认关闭 thinking 推理开销，术语表跨文档复用，翻译前给成本预估。",
+  "version": "0.2.0",
+  "description": "DeepSeek Harness 论文翻译插件：封装 BabelDOC，可经 LLM 桥复用宿主模型（无需第三方 key），默认关闭 thinking 推理开销，术语表跨文档复用，翻译前给成本预估，跑完验收译文内容杜绝原文副本冒充。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -33,7 +33,8 @@
     "babeldoc",
     "translation",
     "glossary",
-    "cost-estimate"
+    "cost-estimate",
+    "llm-bridge"
   ],
   "author": "RyanZhangK",
   "license": "MIT",
